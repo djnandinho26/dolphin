@@ -118,7 +118,7 @@ void Host_Message(HostMessageID id)
   }
   else if (id == HostMessageID::WMUserStop)
   {
-    if (Core::IsRunning())
+    if (Core::IsRunning(Core::System::GetInstance()))
       Core::QueueHostJob(&Core::Stop);
   }
 }
@@ -247,13 +247,13 @@ JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_UnPauseEmula
                                                                                      jclass)
 {
   HostThreadLock guard;
-  Core::SetState(Core::State::Running);
+  Core::SetState(Core::System::GetInstance(), Core::State::Running);
 }
 
 JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_PauseEmulation(JNIEnv*, jclass)
 {
   HostThreadLock guard;
-  Core::SetState(Core::State::Paused);
+  Core::SetState(Core::System::GetInstance(), Core::State::Paused);
 }
 
 JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_StopEmulation(JNIEnv*, jclass)
@@ -272,7 +272,8 @@ JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_SetIsBooting
 
 JNIEXPORT jboolean JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_IsRunning(JNIEnv*, jclass)
 {
-  return s_is_booting.IsSet() || static_cast<jboolean>(Core::IsRunning());
+  return s_is_booting.IsSet() ||
+         static_cast<jboolean>(Core::IsRunning(Core::System::GetInstance()));
 }
 
 JNIEXPORT jboolean JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_IsRunningAndStarted(JNIEnv*,
@@ -468,7 +469,7 @@ JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_SurfaceDestr
     }
 
     if (Core::GetState(Core::System::GetInstance()) == Core::State::Running)
-      Core::SetState(Core::State::Paused);
+      Core::SetState(Core::System::GetInstance(), Core::State::Paused);
   }
 
   std::lock_guard surface_guard(s_surface_lock);
@@ -589,7 +590,7 @@ static void Run(JNIEnv* env, std::unique_ptr<BootParameters>&& boot, bool riivol
   s_need_nonblocking_alert_msg = false;
   surface_guard.unlock();
 
-  while (Core::IsRunning())
+  while (Core::IsRunning(Core::System::GetInstance()))
   {
     host_identity_guard.Unlock();
     s_update_main_frame_event.Wait();
