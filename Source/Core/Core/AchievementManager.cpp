@@ -16,6 +16,7 @@
 #include "Common/Assert.h"
 #include "Common/CommonPaths.h"
 #include "Common/FileUtil.h"
+#include "Common/IOFile.h"
 #include "Common/Image.h"
 #include "Common/Logging/Log.h"
 #include "Common/ScopeGuard.h"
@@ -24,6 +25,7 @@
 #include "Core/Config/AchievementSettings.h"
 #include "Core/Core.h"
 #include "Core/HW/Memmap.h"
+#include "Core/HW/VideoInterface.h"
 #include "Core/PowerPC/MMU.h"
 #include "Core/System.h"
 #include "DiscIO/Blob.h"
@@ -46,7 +48,10 @@ void AchievementManager::Init()
   LoadDefaultBadges();
   if (!m_client && Config::Get(Config::RA_ENABLED))
   {
-    m_client = rc_client_create(MemoryVerifier, Request);
+    {
+      std::lock_guard lg{m_lock};
+      m_client = rc_client_create(MemoryVerifier, Request);
+    }
     std::string host_url = Config::Get(Config::RA_HOST_URL);
     if (!host_url.empty())
       rc_client_set_host(m_client, host_url.c_str());
@@ -158,6 +163,13 @@ bool AchievementManager::IsGameLoaded() const
   return game_info && game_info->id != 0;
 }
 
+void AchievementManager::SetBackgroundExecutionAllowed(bool allowed)
+{
+  m_background_execution_allowed = allowed;
+  if (allowed && Core::GetState(*AchievementManager::GetInstance().m_system) == Core::State::Paused)
+    DoIdle();
+}
+
 void AchievementManager::FetchPlayerBadge()
 {
   FetchBadge(&m_player_badge, RC_IMAGE_TYPE_USER,
@@ -240,6 +252,54 @@ void AchievementManager::DoFrame()
     if (Config::Get(Config::RA_DISCORD_PRESENCE_ENABLED))
       Discord::UpdateDiscordPresence();
   }
+}
+
+bool AchievementManager::CanPause()
+{
+  u32 frames_to_next_pause = 0;
+  bool can_pause = rc_client_can_pause(m_client, &frames_to_next_pause);
+  if (!can_pause)
+  {
+    OSD::AddMessage("Cannot spam pausing in hardcore mode.", OSD::Duration::VERY_LONG,
+                    OSD::Color::RED);
+    OSD::AddMessage(
+        fmt::format("Can pause in {} seconds.",
+                    static_cast<float>(frames_to_next_pause) /
+                        Core::System::GetInstance().GetVideoInterface().GetTargetRefreshRate()),
+        OSD::Duration::VERY_LONG, OSD::Color::RED);
+  }
+  return can_pause;
+}
+
+void AchievementManager::DoIdle()
+{
+  std::thread([this]() {
+    while (true)
+    {
+      Common::SleepCurrentThread(1000);
+      {
+        std::lock_guard lg{m_lock};
+        if (!m_system || Core::GetState(*m_system) != Core::State::Paused)
+          return;
+        if (!m_background_execution_allowed)
+          return;
+        if (!m_client || !IsGameLoaded())
+          return;
+      }
+      // rc_client_idle peeks at memory to recalculate rich presence and therefore
+      // needs to be on host or CPU thread to access memory.
+      Core::QueueHostJob([this](Core::System& system) {
+        std::lock_guard lg{m_lock};
+        if (!m_system || Core::GetState(*m_system) != Core::State::Paused)
+          return;
+        if (!m_background_execution_allowed)
+          return;
+        if (!m_client || !IsGameLoaded())
+          return;
+        rc_client_idle(m_client);
+      });
+    }
+  }).detach();
 }
 
 std::recursive_mutex& AchievementManager::GetLock()
@@ -440,8 +500,8 @@ void AchievementManager::CloseGame()
 void AchievementManager::Logout()
 {
   {
-    std::lock_guard lg{m_lock};
     CloseGame();
+    std::lock_guard lg{m_lock};
     m_player_badge.width = 0;
     m_player_badge.height = 0;
     m_player_badge.data.clear();
@@ -458,6 +518,7 @@ void AchievementManager::Shutdown()
   {
     CloseGame();
     m_queue.Shutdown();
+    std::lock_guard lg{m_lock};
     // DON'T log out - keep those credentials for next run.
     rc_client_destroy(m_client);
     m_client = nullptr;
@@ -993,30 +1054,57 @@ void AchievementManager::FetchBadge(AchievementManager::Badge* badge, u32 badge_
       if (name_to_fetch.empty())
         return;
     }
-    rc_api_fetch_image_request_t icon_request = {.image_name = name_to_fetch.c_str(),
-                                                 .image_type = badge_type};
-    Badge fetched_badge;
-    rc_api_request_t api_request;
-    Common::HttpRequest http_request;
-    if (rc_api_init_fetch_image_request(&api_request, &icon_request) != RC_OK)
+
+    const std::string cache_path = fmt::format(
+        "{}/badge-{}-{}.png", File::GetUserPath(D_RETROACHIEVEMENTSCACHE_IDX), badge_type,
+        Common::SHA1::DigestToString(Common::SHA1::CalculateDigest(name_to_fetch)));
+
+    AchievementManager::Badge tmp_badge;
+    if (!LoadPNGTexture(&tmp_badge, cache_path))
     {
-      ERROR_LOG_FMT(ACHIEVEMENTS, "Invalid request for image {}.", name_to_fetch);
-      return;
-    }
-    auto http_response = http_request.Get(api_request.url, USER_AGENT_HEADER,
-                                          Common::HttpRequest::AllowedReturnCodes::All);
-    if (http_response.has_value() && http_response->size() <= 0)
-    {
-      WARN_LOG_FMT(ACHIEVEMENTS, "RetroAchievements connection failed on image request.\n URL: {}",
-                   api_request.url);
+      rc_api_fetch_image_request_t icon_request = {.image_name = name_to_fetch.c_str(),
+                                                   .image_type = badge_type};
+      Badge fetched_badge;
+      rc_api_request_t api_request;
+      Common::HttpRequest http_request;
+      if (rc_api_init_fetch_image_request(&api_request, &icon_request) != RC_OK)
+      {
+        ERROR_LOG_FMT(ACHIEVEMENTS, "Invalid request for image {}.", name_to_fetch);
+        return;
+      }
+      auto http_response = http_request.Get(api_request.url, USER_AGENT_HEADER,
+                                            Common::HttpRequest::AllowedReturnCodes::All);
+      if (http_response.has_value() && http_response->size() <= 0)
+      {
+        WARN_LOG_FMT(ACHIEVEMENTS,
+                     "RetroAchievements connection failed on image request.\n URL: {}",
+                     api_request.url);
+        rc_api_destroy_request(&api_request);
+        m_update_callback(callback_data);
+        return;
+      }
+
       rc_api_destroy_request(&api_request);
-      m_update_callback(callback_data);
-      return;
+
+      INFO_LOG_FMT(ACHIEVEMENTS, "Successfully downloaded badge id {}.", name_to_fetch);
+
+      if (!LoadPNGTexture(&tmp_badge, *http_response))
+      {
+        ERROR_LOG_FMT(ACHIEVEMENTS, "Badge '{}' failed to load", name_to_fetch);
+        return;
+      }
+
+      std::string temp_path = fmt::format("{}.tmp", cache_path);
+      File::IOFile temp_file(temp_path, "wb");
+      if (!temp_file.IsOpen() ||
+          !temp_file.WriteBytes(http_response->data(), http_response->size()) ||
+          !temp_file.Close() || !File::Rename(temp_path, cache_path))
+      {
+        File::Delete(temp_path);
+        WARN_LOG_FMT(ACHIEVEMENTS, "Failed to store badge '{}' to cache", name_to_fetch);
+      }
     }
 
-    rc_api_destroy_request(&api_request);
-
-    INFO_LOG_FMT(ACHIEVEMENTS, "Successfully downloaded badge id {}.", name_to_fetch);
     std::lock_guard lg{m_lock};
     if (function(*this).empty() || name_to_fetch != function(*this))
     {
@@ -1024,12 +1112,7 @@ void AchievementManager::FetchBadge(AchievementManager::Badge* badge, u32 badge_
       return;
     }
 
-    if (!LoadPNGTexture(badge, *http_response))
-    {
-      ERROR_LOG_FMT(ACHIEVEMENTS, "Default game badge '{}' failed to load",
-                    DEFAULT_GAME_BADGE_FILENAME);
-    }
-
+    *badge = std::move(tmp_badge);
     m_update_callback(callback_data);
     if (badge_type == RC_IMAGE_TYPE_ACHIEVEMENT &&
         m_active_challenges.contains(*callback_data.achievements.begin()))
