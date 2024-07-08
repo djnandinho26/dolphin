@@ -14,6 +14,7 @@
 #include <rcheevos/include/rc_hash.h>
 
 #include "Common/Assert.h"
+#include "Common/BitUtils.h"
 #include "Common/CommonPaths.h"
 #include "Common/FileUtil.h"
 #include "Common/IOFile.h"
@@ -26,6 +27,7 @@
 #include "Core/Core.h"
 #include "Core/HW/Memmap.h"
 #include "Core/HW/VideoInterface.h"
+#include "Core/PatchEngine.h"
 #include "Core/PowerPC/MMU.h"
 #include "Core/System.h"
 #include "DiscIO/Blob.h"
@@ -68,6 +70,34 @@ void AchievementManager::Init()
       Login("");
     INFO_LOG_FMT(ACHIEVEMENTS, "Achievement Manager Initialized");
   }
+}
+
+void AchievementManager::LoadApprovedList()
+{
+  picojson::value temp;
+  std::string error;
+  if (!JsonFromFile(fmt::format("{}{}{}", File::GetSysDirectory(), DIR_SEP, APPROVED_LIST_FILENAME),
+                    &temp, &error))
+  {
+    WARN_LOG_FMT(ACHIEVEMENTS, "Failed to load approved game settings list {}",
+                 APPROVED_LIST_FILENAME);
+    WARN_LOG_FMT(ACHIEVEMENTS, "Error: {}", error);
+    return;
+  }
+  auto context = Common::SHA1::CreateContext();
+  context->Update(temp.serialize());
+  auto digest = context->Finish();
+  if (digest != APPROVED_LIST_HASH)
+  {
+    WARN_LOG_FMT(ACHIEVEMENTS, "Failed to verify approved game settings list {}",
+                 APPROVED_LIST_FILENAME);
+    WARN_LOG_FMT(ACHIEVEMENTS, "Expected hash {}, found hash {}",
+                 Common::SHA1::DigestToString(APPROVED_LIST_HASH),
+                 Common::SHA1::DigestToString(digest));
+    return;
+  }
+  std::lock_guard lg{m_lock};
+  m_ini_root = std::move(temp);
 }
 
 void AchievementManager::SetUpdateCallback(UpdateCallback callback)
@@ -166,7 +196,12 @@ bool AchievementManager::IsGameLoaded() const
 void AchievementManager::SetBackgroundExecutionAllowed(bool allowed)
 {
   m_background_execution_allowed = allowed;
-  if (allowed && Core::GetState(*AchievementManager::GetInstance().m_system) == Core::State::Paused)
+
+  Core::System* system = m_system.load(std::memory_order_acquire);
+  if (!system)
+    return;
+
+  if (allowed && Core::GetState(*system) == Core::State::Paused)
     DoIdle();
 }
 
@@ -241,7 +276,8 @@ void AchievementManager::DoFrame()
     std::lock_guard lg{m_lock};
     rc_client_do_frame(m_client);
   }
-  if (!m_system)
+  Core::System* system = m_system.load(std::memory_order_acquire);
+  if (!system)
     return;
   auto current_time = std::chrono::steady_clock::now();
   if (current_time - m_last_rp_time > std::chrono::seconds{10})
@@ -279,7 +315,8 @@ void AchievementManager::DoIdle()
       Common::SleepCurrentThread(1000);
       {
         std::lock_guard lg{m_lock};
-        if (!m_system || Core::GetState(*m_system) != Core::State::Paused)
+        Core::System* system = m_system.load(std::memory_order_acquire);
+        if (!system || Core::GetState(*system) != Core::State::Paused)
           return;
         if (!m_background_execution_allowed)
           return;
@@ -290,7 +327,7 @@ void AchievementManager::DoIdle()
       // needs to be on host or CPU thread to access memory.
       Core::QueueHostJob([this](Core::System& system) {
         std::lock_guard lg{m_lock};
-        if (!m_system || Core::GetState(*m_system) != Core::State::Paused)
+        if (Core::GetState(system) != Core::State::Paused)
           return;
         if (!m_background_execution_allowed)
           return;
@@ -320,6 +357,48 @@ bool AchievementManager::IsHardcoreModeActive() const
   if (!rc_client_get_game_info(m_client))
     return true;
   return rc_client_is_processing_required(m_client);
+}
+
+void AchievementManager::FilterApprovedPatches(std::vector<PatchEngine::Patch>& patches,
+                                               const std::string& game_ini_id) const
+{
+  if (!IsHardcoreModeActive())
+    return;
+
+  if (!m_ini_root.contains(game_ini_id))
+    patches.clear();
+  auto patch_itr = patches.begin();
+  while (patch_itr != patches.end())
+  {
+    INFO_LOG_FMT(ACHIEVEMENTS, "Verifying patch {}", patch_itr->name);
+
+    auto context = Common::SHA1::CreateContext();
+    context->Update(Common::BitCastToArray<u8>(static_cast<u64>(patch_itr->entries.size())));
+    for (const auto& entry : patch_itr->entries)
+    {
+      context->Update(Common::BitCastToArray<u8>(entry.type));
+      context->Update(Common::BitCastToArray<u8>(entry.address));
+      context->Update(Common::BitCastToArray<u8>(entry.value));
+      context->Update(Common::BitCastToArray<u8>(entry.comparand));
+      context->Update(Common::BitCastToArray<u8>(entry.conditional));
+    }
+    auto digest = context->Finish();
+
+    bool verified = m_ini_root.get(game_ini_id).contains(Common::SHA1::DigestToString(digest));
+    if (!verified)
+    {
+      patch_itr = patches.erase(patch_itr);
+      OSD::AddMessage(
+          fmt::format("Failed to verify patch {} from file {}.", patch_itr->name, game_ini_id),
+          OSD::Duration::VERY_LONG, OSD::Color::RED);
+      OSD::AddMessage("Disable hardcore mode to enable this patch.", OSD::Duration::VERY_LONG,
+                      OSD::Color::RED);
+    }
+    else
+    {
+      patch_itr++;
+    }
+  }
 }
 
 void AchievementManager::SetSpectatorMode()
@@ -487,7 +566,7 @@ void AchievementManager::CloseGame()
       m_queue.Cancel();
       m_image_queue.Cancel();
       rc_client_unload_game(m_client);
-      m_system = nullptr;
+      m_system.store(nullptr, std::memory_order_release);
       if (Config::Get(Config::RA_DISCORD_PRESENCE_ENABLED))
         Discord::UpdateDiscordPresence();
       INFO_LOG_FMT(ACHIEVEMENTS, "Game closed.");
@@ -747,7 +826,7 @@ void AchievementManager::LoadGameCallback(int result, const char* error_message,
   rc_client_set_read_memory_function(instance.m_client, MemoryPeeker);
   instance.m_display_welcome_message = true;
   instance.FetchGameBadges();
-  instance.m_system = &Core::System::GetInstance();
+  instance.m_system.store(&Core::System::GetInstance(), std::memory_order_release);
   instance.m_update_callback({.all = true});
   // Set this to a value that will immediately trigger RP
   instance.m_last_rp_time = std::chrono::steady_clock::now() - std::chrono::minutes{2};
