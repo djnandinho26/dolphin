@@ -295,10 +295,9 @@ bool AchievementManager::CanPause()
   bool can_pause = rc_client_can_pause(m_client, &frames_to_next_pause);
   if (!can_pause)
   {
-    OSD::AddMessage("Cannot spam pausing in hardcore mode.", OSD::Duration::VERY_LONG,
-                    OSD::Color::RED);
     OSD::AddMessage(
-        fmt::format("Can pause in {} seconds.",
+        fmt::format("RetroAchievements Hardcore Mode:\n"
+                    "Cannot pause until another {:.2f} seconds have passed.",
                     static_cast<float>(frames_to_next_pause) /
                         Core::System::GetInstance().GetVideoInterface().GetTargetRefreshRate()),
         OSD::Duration::VERY_LONG, OSD::Color::RED);
@@ -441,7 +440,7 @@ u32 AchievementManager::GetPlayerScore() const
 
 const AchievementManager::Badge& AchievementManager::GetPlayerBadge() const
 {
-  return m_player_badge;
+  return m_player_badge.data.empty() ? m_default_player_badge : m_player_badge;
 }
 
 std::string_view AchievementManager::GetGameDisplayName() const
@@ -461,7 +460,7 @@ rc_api_fetch_game_data_response_t* AchievementManager::GetGameData()
 
 const AchievementManager::Badge& AchievementManager::GetGameBadge() const
 {
-  return m_game_badge;
+  return m_game_badge.data.empty() ? m_default_game_badge : m_game_badge;
 }
 
 const AchievementManager::Badge& AchievementManager::GetAchievementBadge(AchievementId id,
@@ -697,7 +696,6 @@ void AchievementManager::LoadDefaultBadges()
                     DEFAULT_PLAYER_BADGE_FILENAME);
     }
   }
-  m_player_badge = m_default_player_badge;
 
   if (m_default_game_badge.data.empty())
   {
@@ -708,7 +706,6 @@ void AchievementManager::LoadDefaultBadges()
                     DEFAULT_GAME_BADGE_FILENAME);
     }
   }
-  m_game_badge = m_default_game_badge;
 
   if (m_default_unlocked_badge.data.empty())
   {
@@ -889,7 +886,7 @@ void AchievementManager::DisplayWelcomeMessage()
   const u32 color =
       rc_client_get_hardcore_enabled(m_client) ? OSD::Color::YELLOW : OSD::Color::CYAN;
 
-  OSD::AddMessage("", OSD::Duration::VERY_LONG, OSD::Color::GREEN, &m_game_badge);
+  OSD::AddMessage("", OSD::Duration::VERY_LONG, OSD::Color::GREEN, &GetGameBadge());
   auto info = rc_client_get_game_info(m_client);
   if (!info)
   {
@@ -1034,7 +1031,7 @@ void AchievementManager::HandleGameCompletedEvent(const rc_client_event_t* clien
   OSD::AddMessage(fmt::format("Congratulations! {} has {} {}", user_info->display_name,
                               hardcore ? "mastered" : "completed", game_info->title),
                   OSD::Duration::VERY_LONG, hardcore ? OSD::Color::YELLOW : OSD::Color::CYAN,
-                  &AchievementManager::GetInstance().m_game_badge);
+                  &AchievementManager::GetInstance().GetGameBadge());
 }
 
 void AchievementManager::HandleResetEvent(const rc_client_event_t* client_event)
@@ -1080,7 +1077,7 @@ void AchievementManager::Request(const rc_api_request_t* request,
         }
         else
         {
-          constexpr char error_message[] = "Failed HTTP request.";
+          static constexpr char error_message[] = "Failed HTTP request.";
           server_response.body = error_message;
           server_response.body_length = sizeof(error_message);
           server_response.http_status_code = RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
