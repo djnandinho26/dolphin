@@ -413,7 +413,7 @@ void BluetoothEmuDevice::ACLPool::Store(const u8* data, const u16 size, const u1
   m_queue.push_back(Packet());
   auto& packet = m_queue.back();
 
-  std::copy(data, data + size, packet.data);
+  std::copy_n(data, size, packet.data);
   packet.size = size;
   packet.conn_handle = conn_handle;
 }
@@ -438,7 +438,7 @@ void BluetoothEmuDevice::ACLPool::WriteToEndpoint(const USB::V0BulkMessage& endp
   header->length = size;
 
   // Write the packet to the buffer
-  std::copy(data, data + size, (u8*)header + sizeof(hci_acldata_hdr_t));
+  std::copy_n(data, size, (u8*)header + sizeof(hci_acldata_hdr_t));
 
   m_queue.pop_front();
 
@@ -473,8 +473,7 @@ bool BluetoothEmuDevice::SendEventInquiryResponse()
   static_assert(
       sizeof(SHCIEventInquiryResult) - 2 + (num_responses * sizeof(hci_inquiry_response)) < 256);
 
-  const auto iter = std::find_if(m_wiimotes.begin(), m_wiimotes.end(),
-                                 std::mem_fn(&WiimoteDevice::IsInquiryScanEnabled));
+  const auto iter = std::ranges::find_if(m_wiimotes, &WiimoteDevice::IsInquiryScanEnabled);
   if (iter == m_wiimotes.end())
   {
     // No remotes are discoverable.

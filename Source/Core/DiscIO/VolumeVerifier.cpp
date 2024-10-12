@@ -472,8 +472,7 @@ std::vector<Partition> VolumeVerifier::CheckPartitions()
     AddProblem(Severity::High, Common::GetStringT("The install partition is missing."));
 
   if (ShouldHaveMasterpiecePartitions() &&
-      types.cend() ==
-          std::find_if(types.cbegin(), types.cend(), [](u32 type) { return type >= 0xFF; }))
+      types.cend() == std::ranges::find_if(types, [](u32 type) { return type >= 0xFF; }))
   {
     // i18n: This string is referring to a game mode in Super Smash Bros. Brawl called Masterpieces
     // where you play demos of NES/SNES/N64 games. Official translations:
@@ -1301,8 +1300,7 @@ void VolumeVerifier::Finish()
     {
       m_result.hashes.crc32 = std::vector<u8>(4);
       const u32 crc32_be = Common::swap32(m_crc32_context);
-      const u8* crc32_be_ptr = reinterpret_cast<const u8*>(&crc32_be);
-      std::copy(crc32_be_ptr, crc32_be_ptr + 4, m_result.hashes.crc32.begin());
+      std::memcpy(m_result.hashes.crc32.data(), &crc32_be, 4);
     }
 
     if (m_hashes_to_calculate.md5)
