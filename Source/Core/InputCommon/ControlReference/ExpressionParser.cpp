@@ -4,9 +4,9 @@
 #include "InputCommon/ControlReference/ExpressionParser.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <functional>
-#include <iostream>
 #include <map>
 #include <memory>
 #include <regex>
@@ -14,7 +14,6 @@
 #include <utility>
 #include <vector>
 
-#include "Common/Assert.h"
 #include "Common/MsgHandler.h"
 #include "Common/StringUtil.h"
 
@@ -188,7 +187,19 @@ Token Lexer::NextToken()
   case '*':
     return Token(TOK_MUL);
   case '/':
+  {
+    // Handle /* */ style comments.
+    if (it != expr.end() && *it == '*')
+    {
+      ++it;
+      const auto end_of_comment = expr.find("*/", it - expr.begin());
+      if (end_of_comment == std::string::npos)
+        return Token(TOK_INVALID);
+      it = expr.begin() + end_of_comment + 2;
+      return Token(TOK_COMMENT);
+    }
     return Token(TOK_DIV);
+  }
   case '%':
     return Token(TOK_MOD);
   case '=':
@@ -221,26 +232,10 @@ ParseStatus Lexer::Tokenize(std::vector<Token>& tokens)
 {
   while (true)
   {
-    const std::size_t string_position = it - expr.begin();
+    const std::string::iterator prev_it = it;
     Token tok = NextToken();
-
-    tok.string_position = string_position;
-    tok.string_length = it - expr.begin();
-
-    // Handle /* */ style comments.
-    if (tok.type == TOK_DIV && PeekToken().type == TOK_MUL)
-    {
-      const auto end_of_comment = expr.find("*/", it - expr.begin());
-
-      if (end_of_comment == std::string::npos)
-        return ParseStatus::SyntaxError;
-
-      tok.type = TOK_COMMENT;
-      tok.string_length = end_of_comment + 4;
-
-      it = expr.begin() + end_of_comment + 2;
-    }
-
+    tok.string_position = prev_it - expr.begin();
+    tok.string_length = it - prev_it;
     tokens.push_back(tok);
 
     if (tok.type == TOK_INVALID)
@@ -252,12 +247,17 @@ ParseStatus Lexer::Tokenize(std::vector<Token>& tokens)
   return ParseStatus::Successful;
 }
 
+Expression* Expression::GetLValue()
+{
+  return this;
+}
+
 class ControlExpression : public Expression
 {
 public:
   explicit ControlExpression(ControlQualifier qualifier) : m_qualifier(std::move(qualifier)) {}
 
-  ControlState GetValue() const override
+  ControlState GetValue() override
   {
     if (s_hotkey_suppressions.IsSuppressed(m_input))
       return 0;
@@ -352,55 +352,67 @@ public:
   {
   }
 
-  ControlState GetValue() const override
+  ControlState GetValue() override
   {
+    if (op == TOK_ASSIGN || op == TOK_COMMA)
+    {
+      return GetLValue()->GetValue();
+    }
+
+    // Strict evaluation order of lhs,rhs in case of side effects.
+    const ControlState lhs_value = lhs->GetValue();
+    const ControlState rhs_value = rhs->GetValue();
+
     switch (op)
     {
     case TOK_AND:
-      return std::min(lhs->GetValue(), rhs->GetValue());
+      return std::min(lhs_value, rhs_value);
     case TOK_OR:
-      return std::max(lhs->GetValue(), rhs->GetValue());
+      return std::max(lhs_value, rhs_value);
     case TOK_ADD:
-      return lhs->GetValue() + rhs->GetValue();
+      return lhs_value + rhs_value;
     case TOK_SUB:
-      return lhs->GetValue() - rhs->GetValue();
+      return lhs_value - rhs_value;
     case TOK_MUL:
-      return lhs->GetValue() * rhs->GetValue();
+      return lhs_value * rhs_value;
     case TOK_DIV:
     {
-      const ControlState result = lhs->GetValue() / rhs->GetValue();
+      const ControlState result = lhs_value / rhs_value;
       return std::isinf(result) ? 0.0 : result;
     }
     case TOK_MOD:
     {
-      const ControlState result = std::fmod(lhs->GetValue(), rhs->GetValue());
+      const ControlState result = std::fmod(lhs_value, rhs_value);
       return std::isnan(result) ? 0.0 : result;
     }
+    case TOK_LTHAN:
+      return lhs_value < rhs_value;
+    case TOK_GTHAN:
+      return lhs_value > rhs_value;
+    case TOK_XOR:
+      return std::max(std::min(1 - lhs_value, rhs_value), std::min(lhs_value, 1 - rhs_value));
+    default:
+      assert(false);
+      return 0;
+    }
+  }
+
+  Expression* GetLValue() override
+  {
+    switch (op)
+    {
     case TOK_ASSIGN:
     {
-      // Use this carefully as it's extremely powerful and can end up in unforeseen situations
-      lhs->SetValue(rhs->GetValue());
-      return lhs->GetValue();
+      Expression* const lvalue = lhs->GetLValue();
+      const ControlState rvalue = rhs->GetValue();
+      lvalue->SetValue(rvalue);
+      return lvalue;
     }
-    case TOK_LTHAN:
-      return lhs->GetValue() < rhs->GetValue();
-    case TOK_GTHAN:
-      return lhs->GetValue() > rhs->GetValue();
     case TOK_COMMA:
-    {
-      // Eval and discard lhs:
       lhs->GetValue();
-      return rhs->GetValue();
-    }
-    case TOK_XOR:
-    {
-      const auto lval = lhs->GetValue();
-      const auto rval = rhs->GetValue();
-      return std::max(std::min(1 - lval, rval), std::min(lval, 1 - rval));
-    }
+      return rhs->GetLValue();
     default:
-      ASSERT(false);
-      return 0;
+      return this;
     }
   }
 
@@ -448,7 +460,7 @@ class LiteralReal : public LiteralExpression
 public:
   explicit LiteralReal(ControlState value) : m_value(value) {}
 
-  ControlState GetValue() const override { return m_value; }
+  ControlState GetValue() override { return m_value; }
 
   std::string GetName() const override { return ValueToString(m_value); }
 
@@ -470,7 +482,7 @@ class VariableExpression : public Expression
 public:
   explicit VariableExpression(std::string name) : m_name(std::move(name)) {}
 
-  ControlState GetValue() const override { return m_variable_ptr ? *m_variable_ptr : 0; }
+  ControlState GetValue() override { return m_variable_ptr ? *m_variable_ptr : 0; }
 
   void SetValue(ControlState value) override
   {
@@ -500,7 +512,7 @@ public:
     m_modifiers.pop_back();
   }
 
-  ControlState GetValue() const override
+  ControlState GetValue() override
   {
     // True if we have no modifiers
     const bool modifiers_pressed = std::ranges::all_of(
@@ -561,7 +573,7 @@ public:
   }
 
 private:
-  void EnableSuppression(bool force = false) const
+  void EnableSuppression(bool force = false)
   {
     if (!m_suppressor || force)
       m_suppressor = s_hotkey_suppressions.MakeSuppressor(&m_modifiers, &m_final_input);
@@ -569,8 +581,8 @@ private:
 
   HotkeySuppressions::Modifiers m_modifiers;
   std::unique_ptr<ControlExpression> m_final_input;
-  mutable HotkeySuppressions::Suppressor m_suppressor;
-  mutable bool m_is_blocked = false;
+  HotkeySuppressions::Suppressor m_suppressor;
+  bool m_is_blocked = false;
 };
 
 // This class proxies all methods to its either left-hand child if it has bound controls, or its
@@ -586,7 +598,7 @@ public:
   {
   }
 
-  ControlState GetValue() const override { return GetActiveChild()->GetValue(); }
+  ControlState GetValue() override { return GetActiveChild()->GetValue(); }
   void SetValue(ControlState value) override { GetActiveChild()->SetValue(value); }
 
   int CountNumControls() const override { return GetActiveChild()->CountNumControls(); }
@@ -682,6 +694,11 @@ ParseResult ParseResult::MakeErrorResult(Token token, std::string description)
   return result;
 }
 
+bool IsInertToken(const Token& tok)
+{
+  return tok.type == TOK_COMMENT || tok.type == TOK_WHITESPACE;
+}
+
 class Parser
 {
 public:
@@ -711,7 +728,12 @@ private:
     return tok;
   }
 
-  Token Peek() { return *m_it; }
+  Token Peek()
+  {
+    while (IsInertToken(*m_it))
+      ++m_it;
+    return *m_it;
+  }
 
   bool Expects(TokenType type)
   {
@@ -764,12 +786,13 @@ private:
 
           // Comma before the next argument.
           if (TOK_COMMA != tok.type)
-            return ParseResult::MakeErrorResult(tok, Common::GetStringT("Expected comma."));
+            return ParseResult::MakeErrorResult(tok, Common::GetStringT("Expected closing paren."));
         };
       }
     }
 
-    const auto argument_validation = func->SetArguments(std::move(args));
+    func->SetArguments(std::move(args));
+    const auto argument_validation = func->ValidateArguments();
 
     if (std::holds_alternative<FunctionExpression::ExpectedArguments>(argument_validation))
     {
@@ -880,6 +903,18 @@ private:
     }
   }
 
+  static bool IsRTLBinaryOp(TokenType type) { return type == TOK_ASSIGN; }
+
+  static bool IsBinaryOpWithPrecedence(Token tok, int precedence)
+  {
+    if (!tok.IsBinaryOperator())
+      return false;
+
+    const int tok_precedence = OperatorPrecedence(tok.type);
+    return (tok_precedence < precedence) ||
+           (IsRTLBinaryOp(tok.type) && tok_precedence <= precedence);
+  }
+
   ParseResult ParseInfixOperations(int precedence = OperatorPrecedence())
   {
     ParseResult lhs = ParseAtom(Chew());
@@ -889,11 +924,10 @@ private:
 
     std::unique_ptr<Expression> expr = std::move(lhs.expr);
 
-    // TODO: handle LTR/RTL associativity?
     while (true)
     {
       const Token op = Peek();
-      if (op.IsBinaryOperator() && OperatorPrecedence(op.type) < precedence)
+      if (IsBinaryOpWithPrecedence(op, precedence))
       {
         Chew();
         ParseResult rhs = ParseInfixOperations(OperatorPrecedence(op.type));
@@ -1000,16 +1034,7 @@ static ParseResult ParseComplexExpression(const std::string& str)
   if (tokenize_status != ParseStatus::Successful)
     return ParseResult::MakeErrorResult(Token(TOK_INVALID),
                                         Common::GetStringT("Tokenizing failed."));
-
-  RemoveInertTokens(&tokens);
   return ParseTokens(tokens);
-}
-
-void RemoveInertTokens(std::vector<Token>* tokens)
-{
-  std::erase_if(*tokens, [](const Token& tok) {
-    return tok.type == TOK_COMMENT || tok.type == TOK_WHITESPACE;
-  });
 }
 
 static std::unique_ptr<Expression> ParseBarewordExpression(const std::string& str)

@@ -170,10 +170,13 @@ class Expression
 {
 public:
   virtual ~Expression() = default;
-  virtual ControlState GetValue() const = 0;
+  virtual ControlState GetValue() = 0;
   virtual void SetValue(ControlState state) = 0;
   virtual int CountNumControls() const = 0;
   virtual void UpdateReferences(ControlEnvironment& finder) = 0;
+
+  // Perform any side effects and return Expression to be SetValue'd.
+  virtual Expression* GetLValue();
 };
 
 class ParseResult
@@ -197,6 +200,5 @@ private:
 
 ParseResult ParseExpression(const std::string& expr);
 ParseResult ParseTokens(const std::vector<Token>& tokens);
-void RemoveInertTokens(std::vector<Token>* tokens);
 
 }  // namespace ciface::ExpressionParser
