@@ -44,9 +44,6 @@ static bool IsVSyncActive(bool enabled)
 
 void UpdateActiveConfig()
 {
-  auto& movie = Core::System::GetInstance().GetMovie();
-  if (movie.IsPlayingInput() && movie.IsConfigSaved())
-    movie.SetGraphicsConfig();
   g_ActiveConfig = g_Config;
   g_ActiveConfig.bVSyncActive = IsVSyncActive(g_ActiveConfig.bVSync);
 }
@@ -104,8 +101,6 @@ void VideoConfig::Refresh()
   bShowSpeed = Config::Get(Config::GFX_SHOW_SPEED);
   bShowSpeedColors = Config::Get(Config::GFX_SHOW_SPEED_COLORS);
   iPerfSampleUSec = Config::Get(Config::GFX_PERF_SAMP_WINDOW) * 1000;
-  bShowNetPlayPing = Config::Get(Config::GFX_SHOW_NETPLAY_PING);
-  bShowNetPlayMessages = Config::Get(Config::GFX_SHOW_NETPLAY_MESSAGES);
   bLogRenderTimeToFile = Config::Get(Config::GFX_LOG_RENDER_TIME_TO_FILE);
   bOverlayStats = Config::Get(Config::GFX_OVERLAY_STATS);
   bOverlayProjStats = Config::Get(Config::GFX_OVERLAY_PROJ_STATS);
@@ -179,7 +174,6 @@ void VideoConfig::Refresh()
   bEFBAccessEnable = Config::Get(Config::GFX_HACK_EFB_ACCESS_ENABLE);
   bEFBAccessDeferInvalidation = Config::Get(Config::GFX_HACK_EFB_DEFER_INVALIDATION);
   bBBoxEnable = Config::Get(Config::GFX_HACK_BBOX_ENABLE);
-  bForceProgressive = Config::Get(Config::GFX_HACK_FORCE_PROGRESSIVE);
   bSkipEFBCopyToRam = Config::Get(Config::GFX_HACK_SKIP_EFB_COPY_TO_RAM);
   bSkipXFBCopyToRam = Config::Get(Config::GFX_HACK_SKIP_XFB_COPY_TO_RAM);
   bDisableCopyToVRAM = Config::Get(Config::GFX_HACK_DISABLE_COPY_TO_VRAM);
