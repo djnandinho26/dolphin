@@ -524,11 +524,7 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
     }
   }};
 
-  // Load Wiimotes - only if we are booting in Wii mode
-  if (system.IsWii() && !Config::Get(Config::MAIN_BLUETOOTH_PASSTHROUGH_ENABLED))
-  {
-    Wiimote::LoadConfig();
-  }
+  // Wiimote input config is loaded in OnESTitleChanged
 
   FreeLook::LoadInputConfig();
 
@@ -857,10 +853,11 @@ void RunOnCPUThread(Core::System& system, std::function<void()> function, bool w
 // Called from Renderer::Swap (GPU thread) when a frame is presented to the host screen.
 void Callback_FramePresented(const PresentInfo& present_info)
 {
+  g_perf_metrics.CountFrame();
+
   if (present_info.reason == PresentInfo::PresentReason::VideoInterfaceDuplicate)
     return;
 
-  g_perf_metrics.CountFrame();
   s_stop_frame_step.store(true);
 }
 

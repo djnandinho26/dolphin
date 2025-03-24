@@ -20,6 +20,7 @@
 #include "Common/Assert.h"
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
+#include "Common/EnumUtils.h"
 #include "Common/FileUtil.h"
 #include "Common/Hash.h"
 #include "Common/Logging/Log.h"
@@ -1038,7 +1039,8 @@ SamplerState TextureCacheBase::GetSamplerState(u32 index, float custom_tex_scale
     state.tm1.max_lod = 255;
 
   // Anisotropic filtering option.
-  if (g_ActiveConfig.iMaxAnisotropy != 0 && IsAnisostropicEnhancementSafe(tm0))
+  if (g_ActiveConfig.iMaxAnisotropy != AnisotropicFilteringMode::Default &&
+      IsAnisostropicEnhancementSafe(tm0))
   {
     // https://www.opengl.org/registry/specs/EXT/texture_filter_anisotropic.txt
     // For predictable results on all hardware/drivers, only use one of:
@@ -1051,11 +1053,7 @@ SamplerState TextureCacheBase::GetSamplerState(u32 index, float custom_tex_scale
     state.tm0.mag_filter = FilterMode::Linear;
     if (tm0.mipmap_filter != MipMode::None)
       state.tm0.mipmap_filter = FilterMode::Linear;
-    state.tm0.anisotropic_filtering = true;
-  }
-  else
-  {
-    state.tm0.anisotropic_filtering = false;
+    state.tm0.anisotropic_filtering = Common::ToUnderlying(g_ActiveConfig.iMaxAnisotropy);
   }
 
   if (has_arbitrary_mips && tm0.mipmap_filter != MipMode::None)
@@ -1068,7 +1066,7 @@ SamplerState TextureCacheBase::GetSamplerState(u32 index, float custom_tex_scale
     state.tm0.lod_bias = std::clamp<s32>(state.tm0.lod_bias + lod_offset, -32768, 32767);
 
     // Anisotropic also pushes mips farther away so it cannot be used either
-    state.tm0.anisotropic_filtering = false;
+    state.tm0.anisotropic_filtering = 0;
   }
 
   return state;
@@ -1665,11 +1663,8 @@ RcTcacheEntry TextureCacheBase::CreateTextureEntry(
   if (!assets_data.empty())
   {
     const auto calculate_max_levels = [&]() {
-      const auto max_element = std::max_element(
-          assets_data.begin(), assets_data.end(), [](const auto& lhs, const auto& rhs) {
-            return lhs->m_texture.m_slices[0].m_levels.size() <
-                   rhs->m_texture.m_slices[0].m_levels.size();
-          });
+      const auto max_element = std::ranges::max_element(
+          assets_data, {}, [](const auto& v) { return v->m_texture.m_slices[0].m_levels.size(); });
       return (*max_element)->m_texture.m_slices[0].m_levels.size();
     };
     const u32 texLevels = no_mips ? 1 : (u32)calculate_max_levels();
@@ -2026,8 +2021,7 @@ void TextureCacheBase::StitchXFBCopy(RcTcacheEntry& stitched_entry)
   if (candidates.empty())
     return;
 
-  std::sort(candidates.begin(), candidates.end(),
-            [](const TCacheEntry* a, const TCacheEntry* b) { return a->id < b->id; });
+  std::ranges::sort(candidates, {}, &TCacheEntry::id);
 
   // We only upscale when necessary to preserve resolution. i.e. when there are upscaled partial
   // copies to be stitched together.
