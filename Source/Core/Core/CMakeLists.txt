@@ -203,6 +203,8 @@ add_library(core
   HW/EXI/EXI_DeviceAD16.h
   HW/EXI/EXI_DeviceAGP.cpp
   HW/EXI/EXI_DeviceAGP.h
+  HW/EXI/EXI_DeviceBaseboard.cpp
+  HW/EXI/EXI_DeviceBaseboard.h
   HW/EXI/EXI_DeviceDummy.cpp
   HW/EXI/EXI_DeviceDummy.h
   HW/EXI/EXI_DeviceEthernet.cpp
@@ -787,4 +789,7 @@ if(USE_RETRO_ACHIEVEMENTS)
   target_link_libraries(core PUBLIC rcheevos)
   target_compile_definitions(core PUBLIC -DUSE_RETRO_ACHIEVEMENTS)
   target_compile_definitions(core PUBLIC -DRC_CLIENT_SUPPORTS_HASH)
+  if(RC_CLIENT_SUPPORTS_RAINTEGRATION)
+    target_compile_definitions(core PUBLIC -DRC_CLIENT_SUPPORTS_RAINTEGRATION)
+  endif()
 endif()
