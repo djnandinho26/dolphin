@@ -412,7 +412,7 @@ bool FramebufferManager::CompileConversionPipelines()
     EFBReinterpretType convtype = static_cast<EFBReinterpretType>(i);
     std::unique_ptr<AbstractShader> pixel_shader = g_gfx->CreateShaderFromSource(
         ShaderStage::Pixel,
-        FramebufferShaderGen::GenerateFormatConversionShader(convtype, GetEFBSamples()),
+        FramebufferShaderGen::GenerateFormatConversionShader(convtype, GetEFBSamples()), nullptr,
         fmt::format("Framebuffer conversion pixel shader {}", convtype));
     if (!pixel_shader)
       return false;
@@ -644,7 +644,7 @@ bool FramebufferManager::CompileReadbackPipelines()
   {
     auto depth_resolve_shader = g_gfx->CreateShaderFromSource(
         ShaderStage::Pixel, FramebufferShaderGen::GenerateResolveDepthPixelShader(GetEFBSamples()),
-        "Depth resolve pixel shader");
+        nullptr, "Depth resolve pixel shader");
     if (!depth_resolve_shader)
       return false;
 
@@ -658,7 +658,7 @@ bool FramebufferManager::CompileReadbackPipelines()
       config.framebuffer_state.color_texture_format = GetEFBColorFormat();
       auto color_resolve_shader = g_gfx->CreateShaderFromSource(
           ShaderStage::Pixel,
-          FramebufferShaderGen::GenerateResolveColorPixelShader(GetEFBSamples()),
+          FramebufferShaderGen::GenerateResolveColorPixelShader(GetEFBSamples()), nullptr,
           "Color resolve pixel shader");
       if (!color_resolve_shader)
         return false;
@@ -672,7 +672,7 @@ bool FramebufferManager::CompileReadbackPipelines()
 
   // EFB restore pipeline
   auto restore_shader = g_gfx->CreateShaderFromSource(
-      ShaderStage::Pixel, FramebufferShaderGen::GenerateEFBRestorePixelShader(),
+      ShaderStage::Pixel, FramebufferShaderGen::GenerateEFBRestorePixelShader(), nullptr,
       "EFB restore pixel shader");
   if (!restore_shader)
     return false;
@@ -856,7 +856,8 @@ void FramebufferManager::PopulateEFBCache(bool depth, u32 tile_index, bool async
 }
 
 void FramebufferManager::ClearEFB(const MathUtil::Rectangle<int>& rc, bool color_enable,
-                                  bool alpha_enable, bool z_enable, u32 color, u32 z)
+                                  bool alpha_enable, bool z_enable, u32 color, u32 z,
+                                  PixelFormat pixel_format)
 {
   FlushEFBPokes();
   FlagPeekCacheAsOutOfDate();
@@ -870,9 +871,8 @@ void FramebufferManager::ClearEFB(const MathUtil::Rectangle<int>& rc, bool color
   // channel to 0xFF.
   // On backends that don't allow masking Alpha clears, this allows us to use the fast path
   // almost all the time
-  if (bpmem.zcontrol.pixel_format == PixelFormat::RGB565_Z16 ||
-      bpmem.zcontrol.pixel_format == PixelFormat::RGB8_Z24 ||
-      bpmem.zcontrol.pixel_format == PixelFormat::Z24)
+  if (pixel_format == PixelFormat::RGB565_Z16 || pixel_format == PixelFormat::RGB8_Z24 ||
+      pixel_format == PixelFormat::Z24)
   {
     // Force alpha writes, and clear the alpha channel.
     alpha_enable = true;
@@ -880,15 +880,12 @@ void FramebufferManager::ClearEFB(const MathUtil::Rectangle<int>& rc, bool color
   }
 
   g_gfx->ClearRegion(target_rc, color_enable, alpha_enable, z_enable, color, z);
-
-  // Scissor rect must be restored.
-  BPFunctions::SetScissorAndViewport();
 }
 
 bool FramebufferManager::CompileClearPipelines()
 {
   auto vertex_shader = g_gfx->CreateShaderFromSource(
-      ShaderStage::Vertex, FramebufferShaderGen::GenerateClearVertexShader(),
+      ShaderStage::Vertex, FramebufferShaderGen::GenerateClearVertexShader(), nullptr,
       "Clear vertex shader");
   if (!vertex_shader)
     return false;
@@ -1063,7 +1060,7 @@ bool FramebufferManager::CompilePokePipelines()
     return false;
 
   auto poke_vertex_shader = g_gfx->CreateShaderFromSource(
-      ShaderStage::Vertex, FramebufferShaderGen::GenerateEFBPokeVertexShader(),
+      ShaderStage::Vertex, FramebufferShaderGen::GenerateEFBPokeVertexShader(), nullptr,
       "EFB poke vertex shader");
   if (!poke_vertex_shader)
     return false;
