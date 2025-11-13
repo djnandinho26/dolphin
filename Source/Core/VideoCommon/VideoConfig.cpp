@@ -162,12 +162,12 @@ void VideoConfig::Refresh()
 
   stereo_mode = Config::Get(Config::GFX_STEREO_MODE);
   stereo_per_eye_resolution_full = Config::Get(Config::GFX_STEREO_PER_EYE_RESOLUTION_FULL);
-  iStereoDepth = Config::Get(Config::GFX_STEREO_DEPTH);
-  iStereoConvergencePercentage = Config::Get(Config::GFX_STEREO_CONVERGENCE_PERCENTAGE);
+  stereo_depth = Config::Get(Config::GFX_STEREO_DEPTH) *
+                 Config::Get(Config::GFX_STEREO_DEPTH_PERCENTAGE) * 0.00001f;
+  stereo_convergence = Config::Get(Config::GFX_STEREO_CONVERGENCE) *
+                       Config::Get(Config::GFX_STEREO_CONVERGENCE_PERCENTAGE) * 0.01f;
   bStereoSwapEyes = Config::Get(Config::GFX_STEREO_SWAP_EYES);
-  iStereoConvergence = Config::Get(Config::GFX_STEREO_CONVERGENCE);
   bStereoEFBMonoDepth = Config::Get(Config::GFX_STEREO_EFB_MONO_DEPTH);
-  iStereoDepthPercentage = Config::Get(Config::GFX_STEREO_DEPTH_PERCENTAGE);
 
   bEFBAccessEnable = Config::Get(Config::GFX_HACK_EFB_ACCESS_ENABLE);
   bEFBAccessDeferInvalidation = Config::Get(Config::GFX_HACK_EFB_DEFER_INVALIDATION);
@@ -369,7 +369,7 @@ void CheckForConfigChanges()
   if (changed_bits & (CONFIG_CHANGE_BIT_MULTISAMPLES | CONFIG_CHANGE_BIT_STEREO_MODE |
                       CONFIG_CHANGE_BIT_TARGET_SIZE | CONFIG_CHANGE_BIT_HDR))
   {
-    g_framebuffer_manager->RecreateEFBFramebuffer();
+    g_framebuffer_manager->RecreateEFBFramebuffer(g_ActiveConfig.iEFBScale);
   }
 
   if (old_scale != g_framebuffer_manager->GetEFBScale())
