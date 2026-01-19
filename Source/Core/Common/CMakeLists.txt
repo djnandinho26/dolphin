@@ -127,7 +127,6 @@ add_library(common
   QoSSession.h
   Random.cpp
   Random.h
-  Result.h
   ScopeGuard.h
   SDCardUtil.cpp
   SDCardUtil.h
@@ -156,7 +155,6 @@ add_library(common
   TraversalClient.h
   TraversalProto.h
   TypeUtils.h
-  Unreachable.h
   UPnP.cpp
   UPnP.h
   VariantUtil.h
