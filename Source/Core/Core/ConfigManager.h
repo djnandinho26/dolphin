@@ -3,16 +3,11 @@
 
 #pragma once
 
-#include <limits>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
-#include <utility>
-#include <vector>
 
-#include "Common/Common.h"
 #include "Common/CommonTypes.h"
 
 namespace Common
@@ -41,6 +36,8 @@ class TMDReader;
 }  // namespace IOS::ES
 
 struct BootParameters;
+
+static constexpr std::string_view DEFAULT_GAME_ID = "00000000";
 
 struct SConfig
 {
@@ -95,9 +92,9 @@ struct SConfig
   Common::IniFile LoadLocalGameIni() const;
   Common::IniFile LoadGameIni() const;
 
-  static Common::IniFile LoadDefaultGameIni(const std::string& id, std::optional<u16> revision);
-  static Common::IniFile LoadLocalGameIni(const std::string& id, std::optional<u16> revision);
-  static Common::IniFile LoadGameIni(const std::string& id, std::optional<u16> revision);
+  static Common::IniFile LoadDefaultGameIni(std::string_view id, std::optional<u16> revision);
+  static Common::IniFile LoadLocalGameIni(std::string_view id, std::optional<u16> revision);
+  static Common::IniFile LoadGameIni(std::string_view id, std::optional<u16> revision);
 
   SConfig(const SConfig&) = delete;
   SConfig& operator=(const SConfig&) = delete;
