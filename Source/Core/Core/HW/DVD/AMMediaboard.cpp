@@ -29,6 +29,7 @@
 #include "Core/System.h"
 
 #include "DiscIO/CachedBlob.h"
+#include "VideoCommon/OnScreenDisplay.h"
 
 #if defined(__linux__) or defined(__APPLE__) or defined(__FreeBSD__) or defined(__NetBSD__) or     \
     defined(__HAIKU__)
@@ -743,9 +744,11 @@ static s32 NetDIMMConnect(GuestSocket guest_socket, const GuestSocketAddress& gu
 
   WSAPOLLFD pfds[1]{{.fd = host_socket, .events = POLLOUT}};
 
+  // TODO: Possible race between this socket's SetTimeOuts and others'
   const auto timeout =
       duration_cast<std::chrono::milliseconds>(std::chrono::microseconds{s_timeouts[0]});
 
+  // TODO: Might block if timeout is too big
   const int poll_result = PlatformPoll(pfds, timeout);
 
   if (poll_result < 0) [[unlikely]]
@@ -757,7 +760,7 @@ static s32 NetDIMMConnect(GuestSocket guest_socket, const GuestSocketAddress& gu
     return SOCKET_ERROR;
   }
 
-  if ((pfds[0].revents & POLLOUT) == 0)
+  if ((pfds[0].revents & (POLLOUT | POLLERR)) == 0)
   {
     // Timeout.
     s_last_error = SSC_EWOULDBLOCK;
@@ -776,10 +779,14 @@ static s32 NetDIMMConnect(GuestSocket guest_socket, const GuestSocketAddress& gu
   }
   else if (so_error == 0)
   {
+    INFO_LOG_FMT(AMMEDIABOARD_NET, "NetDIMMConnect: connect( {}({}) ) succeeded", host_socket,
+                 u32(guest_socket));
     s_last_error = SSC_SUCCESS;
     return 0;
   }
 
+  ERROR_LOG_FMT(AMMEDIABOARD_NET, "NetDIMMConnect: connect( {}({}) ) failed with error {}: {}",
+                host_socket, u32(guest_socket), so_error, Common::DecodeNetworkError(so_error));
   s_last_error = SOCKET_ERROR;
   return SOCKET_ERROR;
 }
@@ -831,7 +838,8 @@ static GuestSocket NetDIMMAccept(GuestSocket guest_socket, u8* guest_addr_ptr,
 
   if (client_sock == INVALID_GUEST_SOCKET)
   {
-    ERROR_LOG_FMT(AMMEDIABOARD, "AMMBCommandAccept: accept: ({})", Common::StrNetworkError());
+    ERROR_LOG_FMT(AMMEDIABOARD, "AMMBCommandAccept: accept( {}({}) ) failed: {}", host_socket,
+                  int(guest_socket), Common::StrNetworkError());
     s_last_error = SOCKET_ERROR;
     return INVALID_GUEST_SOCKET;
   }
@@ -923,12 +931,12 @@ static u32 NetDIMMBind(GuestSocket guest_socket, const GuestSocketAddress& guest
 
   if (bind_result < 0)
   {
-    const auto* const err_msg = Common::DecodeNetworkError(err);
-    ERROR_LOG_FMT(AMMEDIABOARD, "NetDIMMBind bind() = {} ({})", err, err_msg);
-
-    PanicAlertFmt("Failed to bind socket {}:{}\nError: {} ({})",
-                  Common::IPAddressToString(adjusted_ipv4port.ip_address),
-                  ntohs(adjusted_ipv4port.port), err, err_msg);
+    const auto msg = fmt::format("Failed to bind socket {}:{}",
+                                 Common::IPAddressToString(adjusted_ipv4port.ip_address),
+                                 ntohs(adjusted_ipv4port.port));
+    ERROR_LOG_FMT(AMMEDIABOARD, "NetDIMMBind: {} with error {}: {}", msg, err,
+                  Common::DecodeNetworkError(err));
+    OSD::AddMessage(msg, OSD::Duration::SHORT, OSD::Color::RED);
   }
 
   return bind_result;
@@ -1210,9 +1218,13 @@ static void AMMBCommandSelect(u32 parameter_offset, u32 network_buffer_base)
     WriteGuestFdSetFromPollFds(guest_readfds_ptr, pollfds, POLLIN);
     WriteGuestFdSetFromPollFds(guest_writefds_ptr, pollfds, POLLOUT);
     WriteGuestFdSetFromPollFds(guest_exceptfds_ptr, pollfds, POLLPRI);
+    DEBUG_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: select result: {}", ret);
   }
-
-  DEBUG_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: select result: {}", ret);
+  else
+  {
+    ERROR_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: select failed: {} ({})", ret,
+                  Common::StrNetworkError());
+  }
 
   s_media_buffer[1] = 0;
   s_media_buffer_32[1] = ret;
@@ -1616,8 +1628,17 @@ u32 ExecuteCommand(std::array<u32, 3>& dicmd_buf, u32* diimm_buf, u32 address, u
         const auto guest_socket = GuestSocket(s_media_buffer_32[2]);
         const auto host_socket = GetHostSocket(guest_socket);
 
-        DEBUG_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: GetLastError( {}({}) ):{}", host_socket,
-                      int(guest_socket), int(s_last_error));
+        if (s_last_error == SSC_EWOULDBLOCK)
+        {
+          // Prevent spamming
+          DEBUG_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: GetLastError( {}({}) ):EWOULDBLOCK", host_socket,
+                        int(guest_socket));
+        }
+        else
+        {
+          NOTICE_LOG_FMT(AMMEDIABOARD_NET, "GC-AM: GetLastError( {}({}) ):{}", host_socket,
+                         int(guest_socket), int(s_last_error));
+        }
 
         // Good enough, assuming it's called for the same socket right after an error.
         // TODO: Implement something similar per socket.
