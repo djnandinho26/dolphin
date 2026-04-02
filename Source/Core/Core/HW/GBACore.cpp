@@ -39,6 +39,10 @@
 #include "Core/NetPlayProto.h"
 #include "Core/System.h"
 
+#ifdef ANDROID
+#include "jni/AndroidCommon/AndroidCommon.h"
+#endif
+
 namespace HW::GBA
 {
 namespace
@@ -52,20 +56,7 @@ constexpr size_t AUDIO_BUFFER_SIZE = 512;
 // libmGBA does not return the correct frequency for some GB models
 static u32 GetCoreFrequency(mCore* core)
 {
-  if (core->platform(core) != mPLATFORM_GB)
-    return static_cast<u32>(core->frequency(core));
-
-  switch (static_cast<::GB*>(core->board)->model)
-  {
-  case GB_MODEL_CGB:
-  case GB_MODEL_SCGB:
-  case GB_MODEL_AGB:
-    return CGB_SM83_FREQUENCY;
-  case GB_MODEL_SGB:
-    return SGB_SM83_FREQUENCY;
-  default:
-    return DMG_SM83_FREQUENCY;
-  }
+  return (core->platform(core) == mPLATFORM_GBA) ? GBA_ARM7TDMI_FREQUENCY : CGB_SM83_FREQUENCY;
 }
 
 static VFile* OpenROM_Archive(const char* path)
@@ -126,6 +117,15 @@ static VFile* OpenROM_Zip(const char* path)
   return vf;
 }
 
+static VFile* OpenReadOnlyFile(const char* path)
+{
+#ifdef ANDROID
+  if (IsPathAndroidContent(path))
+    return VFileFromFD(OpenAndroidContent(path, "r"));
+#endif
+  return VFileOpen(path, O_RDONLY);
+}
+
 static VFile* OpenROM(const char* rom_path)
 {
   VFile* vf{};
@@ -134,7 +134,7 @@ static VFile* OpenROM(const char* rom_path)
   if (!vf)
     vf = OpenROM_Zip(rom_path);
   if (!vf)
-    vf = VFileOpen(rom_path, O_RDONLY);
+    vf = OpenReadOnlyFile(rom_path);
   if (!vf)
     return nullptr;
 
@@ -209,6 +209,15 @@ bool Core::Start(u64 gc_ticks)
   mCoreConfigSetIntValue(&m_core->config, "useBios", 0);
   mCoreConfigSetIntValue(&m_core->config, "skipBios", 0);
 
+  // If we eventually load GBC BIOS, then these should potentially all be "CGB".
+  mCoreConfigSetValue(&m_core->config, "gb.model", "DMG");
+  mCoreConfigSetValue(&m_core->config, "sgb.model", "DMG");
+  mCoreConfigSetValue(&m_core->config, "cgb.model", "CGB");
+  mCoreConfigSetValue(&m_core->config, "cgb.hybridModel", "CGB");
+  mCoreConfigSetValue(&m_core->config, "cgb.sgbModel", "CGB");
+
+  mCoreConfigSetIntValue(&m_core->config, "gb.colors", GB_COLORS_CGB);
+
   if (m_core->platform(m_core) == mPLATFORM_GBA)
   {
     LoadBIOS(File::GetUserPath(F_GBABIOS_IDX).c_str());
@@ -238,11 +247,15 @@ bool Core::Start(u64 gc_ticks)
   m_gc_ticks_remainder = 0;
   m_keys = 0;
 
-  SetSIODriver();
+  if (m_device_number != Config::GBPLAYER_GBA_INDEX)
+  {
+    SetSIODriver();
+    SetAVStream();
+  }
+
   SetVideoBuffer();
   SetAudioBufferSize();
   AddCallbacks();
-  SetAVStream();
   SetupEvent();
 
   m_core->reset(m_core);
@@ -334,7 +347,7 @@ void Core::EReaderQueueCard(std::string_view card_path)
 
 bool Core::LoadBIOS(const char* bios_path)
 {
-  VFile* vf = VFileOpen(bios_path, O_RDONLY);
+  VFile* vf = OpenReadOnlyFile(bios_path);
   if (!vf)
   {
     ERROR_LOG_FMT(CORE, "GBA{0} failed to open the BIOS in {1}", m_device_number + 1, bios_path);
@@ -394,10 +407,28 @@ void Core::SetSIODriver()
 
 void Core::SetVideoBuffer()
 {
-  u32 width, height;
-  m_core->currentVideoSize(m_core, &width, &height);
-  m_video_buffer.resize(width * height);
-  m_core->setVideoBuffer(m_core, m_video_buffer.data(), width);
+  if (m_device_number == Config::GBPLAYER_GBA_INDEX)
+  {
+    // GBPlayer expects a GBA-sized video buffer even in GB mode.
+    // Clear it first to avoid stuck colors from the previous game on switch from GBA->GB.
+    m_video_buffer.clear();
+    m_video_buffer.resize(std::size_t{GBA_VIDEO_HORIZONTAL_PIXELS} * GBA_VIDEO_VERTICAL_PIXELS);
+
+    constexpr size_t GB_VIDEO_OFFSET = 1960;
+
+    m_core->setVideoBuffer(
+        m_core, m_video_buffer.data() + ((GetPlatform() == mPLATFORM_GBA) ? 0 : GB_VIDEO_OFFSET),
+        GBA_VIDEO_HORIZONTAL_PIXELS);
+  }
+  else
+  {
+    u32 width;
+    u32 height;
+    m_core->currentVideoSize(m_core, &width, &height);
+    m_video_buffer.resize(std::size_t{width} * height);
+    m_core->setVideoBuffer(m_core, m_video_buffer.data(), width);
+  }
+
   if (auto host = m_host.lock())
     host->GameChanged();
 }
