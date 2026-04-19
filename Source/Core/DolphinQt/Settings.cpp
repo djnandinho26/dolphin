@@ -384,6 +384,7 @@ void Settings::ApplyStyle()
     stylesheet_contents.append(QStringLiteral("%1").arg(tooltip_stylesheet));
   }
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
   // For Fusion, define group box style if not already defined.
   if (style_name.compare(QStringLiteral("fusion"), Qt::CaseInsensitive) == 0 &&
       !stylesheet_contents.contains(QStringLiteral("QGroupBox")))
@@ -403,6 +404,7 @@ void Settings::ApplyStyle()
                                               " min-width: 0;"
                                               "}"));
   }
+#endif
 
   qApp->setStyleSheet(stylesheet_contents);
 }
@@ -552,7 +554,7 @@ QString Settings::GetDefaultGame() const
   return QString::fromStdString(Config::Get(Config::MAIN_DEFAULT_ISO));
 }
 
-void Settings::SetDefaultGame(QString path)
+void Settings::SetDefaultGame(const QString& path)
 {
   if (GetDefaultGame() != path)
   {
@@ -851,7 +853,7 @@ void Settings::RefreshWidgetVisibility()
   emit GameCountVisibilityChanged(IsGameCountVisible());
 }
 
-void Settings::SetDebugFont(QFont font)
+void Settings::SetDebugFont(const QFont& font)
 {
   if (GetDebugFont() != font)
   {

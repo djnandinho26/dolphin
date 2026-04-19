@@ -657,7 +657,7 @@ void TextureCacheBase::DoSaveState(PointerWrap& p)
     }
   }
 
-  auto doList = [&p](auto list) {
+  auto doList = [&p](const auto& list) {
     u32 list_size = static_cast<u32>(list.size());
     p.Do(list_size);
     for (const auto& it : list)
@@ -3133,7 +3133,7 @@ void TextureCacheBase::ApplyMaterialToCacheEntry(const VideoCommon::MaterialReso
   g_gfx->SetTexture(0, entry->texture.get());
   g_gfx->SetSamplerState(0, RenderState::GetPointSamplerState());
 
-  for (const auto texture : material_data->GetTextures())
+  for (const auto& texture : material_data->GetTextures())
   {
     g_gfx->SetTexture(texture.sampler_index, texture.texture);
     g_gfx->SetSamplerState(texture.sampler_index, texture.sampler);
